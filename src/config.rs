@@ -84,6 +84,8 @@ pub struct Config {
     pub direct: ChannelConfig,
     pub adapter_keywords: Vec<String>,
     pub process_names: Vec<String>,
+    /// 是否允许用 ICMP 探测内网。部分公司会监控内网 ICMP，可关掉改用 TCP
+    pub allow_icmp: bool,
     pub bridge: BridgeConfig,
 }
 
@@ -146,6 +148,7 @@ impl Config {
                     list
                 }
             },
+            allow_icmp: root.flag("vpn.allow_icmp", default.allow_icmp),
             bridge: BridgeConfig {
                 enabled: root.flag("ai_bridge.enabled", default.bridge.enabled),
                 host: root.string("ai_bridge.host", &default.bridge.host),
@@ -228,6 +231,7 @@ impl Config {
                         ),
                     ),
                     ("targets".into(), Json::Arr(Vec::new())),
+                    ("allow_icmp".into(), Json::Bool(self.allow_icmp)),
                     ("good_ms".into(), Json::Num(self.vpn.good_ms)),
                     ("warn_ms".into(), Json::Num(self.vpn.warn_ms)),
                 ]),
@@ -297,6 +301,7 @@ impl Default for Config {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            allow_icmp: true,
             bridge: BridgeConfig {
                 enabled: true,
                 host: "127.0.0.1".into(),

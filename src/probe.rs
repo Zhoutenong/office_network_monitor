@@ -391,8 +391,10 @@ pub fn icmp_probe(host: &str, timeout: Duration) -> ProbeResult {
     if handle.is_null() || handle == (-1isize as HANDLE) {
         return ProbeResult::fail("ICMP 不可用");
     }
-    let request = [0x4eu8; 16];
-    let mut reply = vec![0u8; 128];
+    // 载荷刻意与系统 ping 的默认内容一致（32 字节 a..w 循环）：
+    // 固定长度 + 固定内容的 ICMP 是最容易被指纹识别成"信标"的特征
+    let request: &[u8; 32] = b"abcdefghijklmnopqrstuvwabcdefghi";
+    let mut reply = vec![0u8; 160];
     let started = Instant::now();
     let count = unsafe {
         net::IcmpSendEcho(

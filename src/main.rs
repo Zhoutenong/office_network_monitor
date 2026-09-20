@@ -132,25 +132,22 @@ fn monitor_loop(runtime: Arc<tray::Runtime>, hwnd: isize) {
         if runtime.quit.load(Ordering::Relaxed) {
             break;
         }
-        let interval = runtime.interval();
+        // 精确固定周期在流量分析里是"信标"特征（更容易被当成异常），加 ±20% 抖动打散
+        let interval = runtime.interval() * (0.8 + next_random() * 0.4);
         let probe_started = Instant::now();
         let snapshot = match runtime.engine.lock() {
             Ok(mut engine) => engine.refresh(),
             Err(_) => break,
         };
+        // 正常每轮零点几秒；明显偏慢才记一笔，避免日志被日常噪声淹没
         let probe_ms = probe_started.elapsed().as_secs_f64() * 1000.0;
-        let stage_started = Instant::now();
+        if probe_ms > 5000.0 {
+            log::write(
+                "WARN",
+                &format!("本轮探测耗时 {:.0} ms，偏慢（网络或探测目标异常）", probe_ms),
+            );
+        }
         runtime.stage(&snapshot);
-        let stage_ms = stage_started.elapsed().as_secs_f64() * 1000.0;
-        log::write(
-            "INFO",
-            &format!(
-                "round: probe {:.0}ms, tray-stage {:.0}ms, total-window {:.0}ms",
-                probe_ms,
-                stage_ms,
-                probe_started.elapsed().as_secs_f64() * 1000.0
-            ),
-        );
         if let Ok(mut guard) = runtime.snapshot.lock() {
             *guard = Some(snapshot);
         }
@@ -167,6 +164,26 @@ fn monitor_loop(runtime: Arc<tray::Runtime>, hwnd: isize) {
             }
         }
     }
+}
+
+/// 极简 xorshift 伪随机数（0.0 ~ 1.0），只为探测间隔抖动服务，不引第三方库。
+fn next_random() -> f64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEED: AtomicU64 = AtomicU64::new(0);
+    let mut state = SEED.load(Ordering::Relaxed);
+    if state == 0 {
+        state = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15)
+            | 1;
+    }
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    SEED.store(state, Ordering::Relaxed);
+    (state >> 11) as f64 / (1u64 << 53) as f64
 }
 
 fn selftest(config_path: &Path) {

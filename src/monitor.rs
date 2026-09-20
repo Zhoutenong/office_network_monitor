@@ -344,10 +344,18 @@ pub struct VpnChannel {
     presence_at: Option<Instant>,
     peers: Vec<Target>,
     peers_at: Option<Instant>,
+    /// 上一轮成功的自动目标：稳定后只测它一个，避免每轮都把候选全打一遍
+    auto_preferred: Option<Target>,
+    allow_icmp: bool,
 }
 
 impl VpnChannel {
-    pub fn new(config: ChannelConfig, keywords: Vec<String>, process_names: Vec<String>) -> VpnChannel {
+    pub fn new(
+        config: ChannelConfig,
+        keywords: Vec<String>,
+        process_names: Vec<String>,
+        allow_icmp: bool,
+    ) -> VpnChannel {
         let session = HttpSession::new("");
         VpnChannel {
             base: ChannelBase::new(config),
@@ -358,6 +366,8 @@ impl VpnChannel {
             presence_at: None,
             peers: Vec::new(),
             peers_at: None,
+            auto_preferred: None,
+            allow_icmp,
         }
     }
 
@@ -425,6 +435,12 @@ impl VpnChannel {
         }
         targets.extend(self.peers.iter().cloned());
 
+        // 禁用了 ICMP 时，这些只能 ping 的候选就没有意义了（会被直接跳过）
+        if !self.allow_icmp {
+            targets.truncate(4);
+            return targets;
+        }
+
         if let Some(dns) = presence.dns.first() {
             targets.push(Target {
                 kind: TargetKind::Icmp,
@@ -480,10 +496,15 @@ impl VpnChannel {
                 let (host, port) = split_host_port(&target.value)?;
                 Some(probe::tcp_probe(&host, port, timeout))
             }
-            TargetKind::Icmp => Some(probe::icmp_probe(
-                &target.value,
-                timeout.min(Duration::from_millis(2000)),
-            )),
+            TargetKind::Icmp => {
+                if !self.allow_icmp {
+                    return None;
+                }
+                Some(probe::icmp_probe(
+                    &target.value,
+                    timeout.min(Duration::from_millis(2000)),
+                ))
+            }
         }
     }
 
@@ -492,19 +513,30 @@ impl VpnChannel {
         &mut self,
         targets: &[Target],
         timeout: Duration,
-    ) -> Option<(String, ProbeResult)> {
-        let mut best: Option<(String, ProbeResult)> = None;
+    ) -> Option<(Target, String, ProbeResult)> {
+        let mut best: Option<(Target, String, ProbeResult)> = None;
+        let allow_icmp = self.allow_icmp;
         std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for target in targets {
                 let label = target.label();
                 handles.push((
+                    target.clone(),
                     label,
                     scope.spawn(move || -> Option<ProbeResult> {
                         let result = match target.kind {
                             TargetKind::Tcp => {
                                 let (host, port) = split_host_port(&target.value)?;
                                 probe::tcp_probe(&host, port, timeout)
+                            }
+                            // 配置里禁用了 ICMP：有端口就退回 TCP，否则放弃这个候选
+                            TargetKind::Icmp if !allow_icmp => {
+                                let port = target.port?;
+                                probe::tcp_probe(
+                                    &target.value,
+                                    port,
+                                    timeout.min(Duration::from_millis(1200)),
+                                )
                             }
                             TargetKind::Icmp => probe::icmp_probe(
                                 &target.value,
@@ -524,7 +556,7 @@ impl VpnChannel {
                     }),
                 ));
             }
-            for (label, handle) in handles {
+            for (target, label, handle) in handles {
                 if let Ok(Some(result)) = handle.join() {
                     if !result.ok {
                         continue;
@@ -532,10 +564,10 @@ impl VpnChannel {
                     let latency = result.latency_ms.unwrap_or(f64::MAX);
                     let better = best
                         .as_ref()
-                        .map(|(_, current)| latency < current.latency_ms.unwrap_or(f64::MAX))
+                        .map(|(_, _, current)| latency < current.latency_ms.unwrap_or(f64::MAX))
                         .unwrap_or(true);
                     if better {
-                        best = Some((label, result));
+                        best = Some((target, label, result));
                     }
                 }
             }
@@ -585,8 +617,29 @@ impl VpnChannel {
         }
 
         if !manual {
+            // 稳态下只复用上一轮成功的那个目标：每轮 1 个探测包，而不是把候选全打一遍
+            if let Some(preferred) = self.auto_preferred.clone() {
+                if let Some(result) = self.probe_target(&preferred, timeout, verify_default) {
+                    if result.ok {
+                        let latency = result.latency_ms.unwrap_or(0.0);
+                        self.base.record(Some(latency));
+                        let level = level_of(latency, good, warn);
+                        return self.base.state(
+                            "vpn",
+                            level,
+                            Some(latency),
+                            status_of(level).to_string(),
+                            format!("{}{} {}", prefix, preferred.label(), result.detail),
+                        );
+                    }
+                }
+                // 原来的目标不行了，重新找一轮
+                self.auto_preferred = None;
+            }
+
             let best = self.best_of(&targets, timeout);
-            if let Some((name, result)) = best {
+            if let Some((target, name, result)) = best {
+                self.auto_preferred = Some(target);
                 let latency = result.latency_ms.unwrap_or(0.0);
                 self.base.record(Some(latency));
                 let level = level_of(latency, good, warn);
@@ -671,6 +724,7 @@ impl Engine {
             config.vpn.clone(),
             config.adapter_keywords.clone(),
             config.process_names.clone(),
+            config.allow_icmp,
         );
         let last = Snapshot::placeholder(&config);
         Engine {
@@ -701,6 +755,7 @@ impl Engine {
             self.config.vpn.clone(),
             self.config.adapter_keywords.clone(),
             self.config.process_names.clone(),
+            self.config.allow_icmp,
         );
         self.clash_meta = String::new();
         self.clash_meta_at = None;
