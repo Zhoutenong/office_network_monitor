@@ -20,7 +20,11 @@ type GpStringFormat = *mut c_void;
 
 pub const UNIT_PIXEL: i32 = 2;
 pub const SMOOTHING_ANTIALIAS: i32 = 4;
-pub const TEXT_ANTIALIAS: i32 = 4;
+/// AntiAliasGridFit：把字形对齐到像素网格，小字号下明显更清晰。
+/// （ClearType 在带透明度的分层窗口里不可用，会退化成灰度抗锯齿）
+pub const TEXT_ANTIALIAS: i32 = 3;
+/// PixelOffsetModeHalf：半像素偏移，避免文字被"抹开"
+pub const PIXEL_OFFSET_HALF: i32 = 4;
 pub const ALIGN_NEAR: i32 = 0;
 pub const ALIGN_CENTER: i32 = 1;
 pub const ALIGN_FAR: i32 = 2;
@@ -130,6 +134,7 @@ extern "system" {
 }
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
+static FAMILY_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn init() {
     if TOKEN.load(Ordering::Relaxed) != 0 {
@@ -175,7 +180,7 @@ impl Graphics {
         unsafe {
             GdipSetSmoothingMode(graphics, SMOOTHING_ANTIALIAS);
             GdipSetTextRenderingHint(graphics, TEXT_ANTIALIAS);
-            GdipSetPixelOffsetMode(graphics, 2);
+            GdipSetPixelOffsetMode(graphics, PIXEL_OFFSET_HALF);
         }
         Some(Graphics(graphics))
     }
@@ -188,7 +193,7 @@ impl Graphics {
         unsafe {
             GdipSetSmoothingMode(graphics, SMOOTHING_ANTIALIAS);
             GdipSetTextRenderingHint(graphics, TEXT_ANTIALIAS);
-            GdipSetPixelOffsetMode(graphics, 2);
+            GdipSetPixelOffsetMode(graphics, PIXEL_OFFSET_HALF);
         }
         Some(Graphics(graphics))
     }
@@ -285,6 +290,7 @@ impl Graphics {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_text(
         &self,
         text: &str,
@@ -296,7 +302,28 @@ impl Graphics {
         width: f32,
         color: u32,
     ) {
-        let font = match Font::new(size, bold) {
+        self.draw_text_ex(text, x, y, size, bold, align, width, color, false);
+    }
+
+    /// `numeric = true` 时用数字优先字体（Segoe UI）
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text_ex(
+        &self,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        bold: bool,
+        align: i32,
+        width: f32,
+        color: u32,
+        numeric: bool,
+    ) {
+        let font = match if numeric {
+            Font::numeric(size, bold)
+        } else {
+            Font::new(size, bold)
+        } {
             Some(value) => value,
             None => return,
         };
@@ -327,7 +354,15 @@ impl Graphics {
 
     /// 量一段文字，用于自适应布局
     pub fn measure_text(&self, text: &str, size: f32, bold: bool) -> f32 {
-        let font = match Font::new(size, bold) {
+        self.measure_text_ex(text, size, bold, false)
+    }
+
+    pub fn measure_text_ex(&self, text: &str, size: f32, bold: bool, numeric: bool) -> f32 {
+        let font = match if numeric {
+            Font::numeric(size, bold)
+        } else {
+            Font::new(size, bold)
+        } {
             Some(value) => value,
             None => return 0.0,
         };
@@ -405,11 +440,35 @@ impl Drop for Pen {
 
 pub struct Font(GpFont);
 
+/// 中文界面字体优先级：Noto Sans SC 字形最干净，其次等线，再退到雅黑
+const UI_FAMILIES: [&str; 5] = [
+    "Noto Sans SC",
+    "DengXian",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "Segoe UI",
+];
+
+/// 数字优先用 Segoe UI：等宽感更好、hinting 更到位
+const NUMBER_FAMILIES: [&str; 3] = ["Segoe UI", "Noto Sans SC", "DengXian"];
+
 impl Font {
     pub fn new(size: f32, bold: bool) -> Option<Font> {
-        let family = FontFamily::new("Microsoft YaHei UI")
-            .or_else(|| FontFamily::new("Microsoft YaHei"))
-            .or_else(|| FontFamily::new("Segoe UI"))?;
+        Font::from_families(&UI_FAMILIES, size, bold)
+    }
+
+    pub fn numeric(size: f32, bold: bool) -> Option<Font> {
+        Font::from_families(&NUMBER_FAMILIES, size, bold)
+    }
+
+    fn from_families(names: &[&str], size: f32, bold: bool) -> Option<Font> {
+        let family = names.iter().find_map(|name| {
+            let created = FontFamily::new(name);
+            if created.is_some() && !FAMILY_LOGGED.swap(true, Ordering::Relaxed) {
+                crate::log::write("INFO", &format!("界面字体选用：{}", name));
+            }
+            created
+        })?;
         let mut font: GpFont = std::ptr::null_mut();
         let style = if bold { FONT_STYLE_BOLD } else { FONT_STYLE_REGULAR };
         if unsafe { GdipCreateFont(family.0, size, style, UNIT_PIXEL, &mut font) } != 0 {

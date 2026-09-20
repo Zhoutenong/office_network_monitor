@@ -159,11 +159,6 @@ pub fn current_snapshot() -> Option<Snapshot> {
     runtime().and_then(|rt| rt.snapshot.lock().ok().and_then(|guard| guard.clone()))
 }
 
-/// 供面板按钮触发“立即刷新”
-pub fn runtime_handle() -> Option<&'static Arc<Runtime>> {
-    runtime()
-}
-
 /// 本机只读接口地址（用于面板底部展示）
 pub fn bridge_url() -> Option<String> {
     runtime().and_then(|rt| rt.bridge_url.lock().ok().and_then(|guard| guard.clone()))

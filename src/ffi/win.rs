@@ -29,6 +29,11 @@ pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WA_INACTIVE: u16 = 0;
 pub const VK_ESCAPE: usize = 0x1B;
+pub const VK_LBUTTON: i32 = 0x01;
+/// GetAsyncKeyState 的"当前按下"位
+pub const KEY_DOWN_MASK: u16 = 0x8000;
+/// GetAsyncKeyState 的"自上次调用以来被按过"位：用来抓住短于轮询间隔的点击
+pub const KEY_PRESSED_SINCE_LAST: u16 = 0x0001;
 pub const IDC_HAND: usize = 32649;
 
 pub const WS_POPUP: u32 = 0x8000_0000;
@@ -342,6 +347,8 @@ extern "system" {
     pub fn GetFocus() -> HWND;
     pub fn SetFocus(hwnd: HWND) -> HWND;
     pub fn GetForegroundWindow() -> HWND;
+    pub fn BringWindowToTop(hwnd: HWND) -> BOOL;
+    pub fn GetAsyncKeyState(key: i32) -> i16;
     pub fn GetWindowThreadProcessId(hwnd: HWND, process_id: *mut u32) -> u32;
     pub fn AttachThreadInput(attach: u32, attach_to: u32, do_attach: BOOL) -> BOOL;
     pub fn DestroyIcon(icon: HICON) -> BOOL;
