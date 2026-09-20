@@ -1,0 +1,24 @@
+[package]
+name = "network-monitor"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "NetworkMonitor"
+path = "src/main.rs"
+
+[features]
+default = []
+# 保留控制台窗口，便于开发与排查；release 默认无控制台
+console = []
+
+# 零第三方依赖：全部直接调用系统 Win32 / WinHTTP / GDI+ 接口
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false

@@ -1,0 +1,7 @@
+# Rust 构建产物
+/target
+*.pdb
+
+# 运行时生成
+config.json
+*.log
